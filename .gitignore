@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.data/
+.local/
+.env
+*.log
+test-results/
+playwright-report/
+coverage/
+.DS_Store
+*.tsbuildinfo
+*.tar.gz
+*.zip

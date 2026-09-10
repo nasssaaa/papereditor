@@ -1,0 +1,9 @@
+FROM public.ecr.aws/docker/library/debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl perl fontconfig libfreetype6 libfontconfig1 \
+    libglib2.0-0 libx11-6 libxext6 libxrender1 libsm6 libice6 \
+    libpaper1 libgmp10 libmpfr6 libstdc++6 zlib1g \
+    && rm -rf /var/lib/apt/lists/*
+ENV PATH="/opt/texlive/bin/aarch64-linux:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+    TEXMFVAR=/work/.tex-cache TEXMFCONFIG=/work/.tex-config TEXMFHOME=/work/.tex-home HOME=/work
+WORKDIR /work
