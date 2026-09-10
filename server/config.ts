@@ -14,6 +14,7 @@ export interface Config {
   timeoutMs: number;
   concurrency: number;
   secureCookie: boolean;
+  trustProxy: boolean;
   requiredVolume?: string;
 }
 export function getConfig(overrides: Partial<Config> = {}): Config {
@@ -35,6 +36,7 @@ export function getConfig(overrides: Partial<Config> = {}): Config {
     timeoutMs: Number(process.env.COMPILE_TIMEOUT_MS || 120000),
     concurrency: Number(process.env.COMPILE_CONCURRENCY || 1),
     secureCookie: process.env.COOKIE_SECURE === 'true',
+    trustProxy: process.env.TRUST_PROXY === 'true',
     requiredVolume: process.env.REQUIRED_VOLUME,
     ...overrides,
   };

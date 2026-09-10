@@ -10,7 +10,7 @@ const credentials = JSON.parse(
 test('workspace editing, snapshots, project settings, and narrow preview', async ({ page }) => {
   const errors: string[] = [];
   page.on('pageerror', (e) => errors.push(e.message));
-  await page.goto('/');
+  await page.goto('./');
   await page.getByLabel('用户名', { exact: true }).fill(credentials.username);
   await page.getByLabel('密码', { exact: true }).fill(credentials.password);
   await page.getByRole('button', { name: '进入工作空间' }).click();
@@ -18,20 +18,25 @@ test('workspace editing, snapshots, project settings, and narrow preview', async
   await expect(page.getByTitle('保存状态')).toContainText('已保存', { timeout: 20000 });
   await page.screenshot({ path: 'test-results/workspace-desktop.png', fullPage: true });
   await page.getByRole('button', { name: '新建项目', exact: true }).click();
-  await page.getByLabel('项目名称').fill('浏览器验收项目');
+  const projectTitle = `浏览器验收项目 ${Date.now()}`;
+  await page.getByLabel('项目名称').fill(projectTitle);
   await page.getByText('空白项目', { exact: true }).click();
   await page.getByRole('button', { name: '创建项目', exact: true }).click();
-  await expect(page.getByLabel('选择项目')).toContainText('浏览器验收项目');
+  await expect(page.locator('.breadcrumbs')).toContainText(projectTitle);
   await expect(page.getByTitle('保存状态')).toContainText('已保存');
   await page.getByLabel('自动编译').uncheck();
   const input = page.locator('.monaco-editor textarea').first();
   await input.focus();
   await page.keyboard.press('Control+Home');
   await page.keyboard.insertText('% Browser acceptance edit\n');
+  await expect(page.locator('.monaco-editor .view-lines')).toContainText('Browser acceptance edit');
   await expect(page.getByTitle('保存状态')).toContainText('已保存');
   await page.reload();
   await expect(page.getByTitle('保存状态')).toContainText('已保存');
   await expect(page.locator('.monaco-editor .view-lines')).toContainText('Browser acceptance edit');
+  await page.getByRole('button', { name: '全局搜索', exact: true }).click();
+  await page.getByLabel('全局搜索词').fill('Browser acceptance edit');
+  await expect(page.locator('.search-results')).toContainText('main.tex');
   await page.getByRole('button', { name: '版本快照', exact: true }).click();
   await page.getByRole('button', { name: '创建快照', exact: true }).click();
   await page.getByLabel('快照名称').fill('浏览器检查点');

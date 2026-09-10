@@ -2,6 +2,8 @@
 
 一个面向小型研究团队的 LaTeX 协作编辑器。浏览器使用 VS Code 经典深色工作台，服务端保存协作文档并编译 PDF。本机 Windows 支持 MiKTeX；Mac 部署使用 ARM 原生 TeX Live。
 
+访问入口：[https://fblerp.com/papereditor/](https://fblerp.com/papereditor/)，使用团队管理员创建的账号登录。应用使用独立子路径，保留原 ERP 的首页和接口。
+
 ![Paper Editor 工作台](docs/assets/workspace.png)
 
 ## 已实现

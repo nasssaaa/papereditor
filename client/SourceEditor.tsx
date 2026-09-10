@@ -87,6 +87,7 @@ export function SourceEditor(props: Props) {
   propsRef.current = props;
   useEffect(() => {
     if (!editor) return;
+    propsRef.current.onStatus('connecting');
     let disposed = false,
       connected = false,
       ack: Uint8Array | null = null,
@@ -151,6 +152,7 @@ export function SourceEditor(props: Props) {
     provider.on('sync', (synced: boolean) => {
       if (synced) {
         ready = true;
+        editor.updateOptions({ readOnly: props.readOnly });
         setInitialized(true);
       }
       updateStatus();
@@ -216,6 +218,7 @@ export function SourceEditor(props: Props) {
       if (disposed) return;
       if (text.length > 0) {
         ready = true;
+        editor.updateOptions({ readOnly: props.readOnly });
         setInitialized(true);
       }
       provider.connect();

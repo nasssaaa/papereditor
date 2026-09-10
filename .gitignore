@@ -3,6 +3,12 @@ dist/
 .data/
 .local/
 .env
+.env.*
+!.env.example
+*.key
+*.pem
+*.pfx
+*.p12
 *.log
 test-results/
 playwright-report/

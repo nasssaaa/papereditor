@@ -60,34 +60,58 @@ launchctl kickstart -k "gui/$(id -u)/com.papereditor.frpc"
 tail -50 ~/Library/Logs/PaperEditor/com.papereditor.app.error.log
 ```
 
-这是用户级 LaunchAgent：用户登录后启动、进程退出后重启。没有在本次工作中重启整台 Mac，也不宣称能绕过 FileVault 登录。若要求断电后无人值守启动，需要单独选择系统级服务、磁盘解锁和开机登录方案。
+当前 App 的 LaunchAgent 配置已保存，但因 bash 外接盘权限仍被拒绝，失败作业已暂时卸载，避免重复启动。实际运行进程的 PID 保存在 `tmp/acceptance-app.pid`；待权限生效后，先核对该 PID 的进程确为本项目 Node 服务并停止它，再运行 `python3 deploy/configure-launchd.py`，最后验证健康接口。FRPC 的 LaunchAgent 已正常运行。`kickstart` 仅适用于已经成功 bootstrap 的作业。
+
+临时手动恢复：在能正常读取 SSD 的 Mac 终端或 SSH 会话中执行以下命令。健康接口正常时不会重复启动；启动后再次检查健康接口和日志。这只启动本次后台进程，不注册自动启动。
+
+```bash
+python3 - <<'PY'
+from pathlib import Path
+import subprocess, urllib.request
+root = Path('/Volumes/KIOXIA/PaperEditor')
+try:
+    with urllib.request.urlopen('http://127.0.0.1:18080/api/health', timeout=3) as response:
+        print(response.read().decode())
+    raise SystemExit('App is already running.')
+except OSError:
+    pass
+with (root / 'logs/acceptance-app.log').open('ab') as log:
+    process = subprocess.Popen(
+        ['/bin/bash', str(root / 'app/deploy/start-mac.sh')],
+        stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+(root / 'tmp/acceptance-app.pid').write_text(str(process.pid))
+print('Started PID', process.pid)
+PY
+curl http://127.0.0.1:18080/api/health
+```
+
+这是用户级 LaunchAgent：权限就绪后，用户登录时启动、进程退出后重启。没有在本次工作中重启整台 Mac，也不宣称能绕过 FileVault 登录。若要求断电后无人值守启动，需要单独选择系统级服务、磁盘解锁和开机登录方案。
 
 ## 公网入口
 
-现有 FRPS 的 `proxyBindAddr` 是 `127.0.0.1`。本项目保留这个全局配置，通过 Windows `portproxy` 只把本机网卡的 18080 转到 `127.0.0.1:18080`，避免把其他 FRP 服务一起暴露。
+访问 `https://fblerp.com/papereditor/`。Nginx 在既有 fblerp.com HTTPS server 中仅加入一个独立路由 include，使用现有证书；根路径、ERP API 和其他站点保持原有路由。`/papereditor` 自动跳转到带末尾斜线的路径。
 
-当前服务器内网网卡地址为 `172.17.8.78`；更换服务器时必须先查询并使用实际网卡地址：
+- `deploy/nginx-papereditor.conf`：在 http 上下文定义独立 upstream 和 WebSocket map。
+- `deploy/nginx-papereditor-route.conf`：在 fblerp.com HTTPS server 中代理 /papereditor/，转发时去除前缀。
+- `deploy/configure-nginx-windows.ps1`：核对目标 server、备份、插入两处 include、校验和平滑重载。
 
-```powershell
-New-NetFirewallRule -DisplayName 'PaperEditor-HTTP-18080' -Direction Inbound -Action Allow -Protocol TCP -LocalPort 18080
-netsh interface portproxy add v4tov4 listenaddress=172.17.8.78 listenport=18080 connectaddress=127.0.0.1 connectport=18080 protocol=tcp
-```
+前端采用相对构建资源，根据页面入口计算 API/PDF/WebSocket 前缀，因此同一构建产物也能在本机根路径运行。Nginx 将会话 Cookie 的 Path 改为 /papereditor/；应用开启 `COOKIE_SECURE=true`、`TRUST_PROXY=true`，只信任回环代理提供的客户端地址。
 
-还需在阿里云安全组入方向放行 TCP 18080。测试链路按以下次序：
+执行配置脚本时使用当前 Nginx 的运行身份。本次服务使用 SYSTEM，其他已有站点证书也限制 SYSTEM 读取，因此通过一次性 SYSTEM 任务校验并重载，任务已在完成后删除。既有站点证书权限没有放宽。
 
-1. Mac：`http://127.0.0.1:18080/api/health`。
-2. Windows 公网服务器：本机 `127.0.0.1:18080` 及网卡地址的健康接口。
-3. 外部浏览器：公网 IP 的 18080，登录、编辑并等待“已保存”，然后编译。
+公网 18080 的临时防火墙规则与 portproxy 已移除，FRPS 仅在 `127.0.0.1:18080` 监听。用户提供的 wh1234567.com 因未备案没有继续使用；该域名的独立虚拟主机已移除，其证书只留在服务器的私有目录，未提交 Git。
 
-健康接口正常不等于协同完成；浏览器端还需通过 WebSocket、PDF 字体和双向定位验收。
+验证三层接口：Mac 的 `http://127.0.0.1:18080/api/health`、公网 Windows 的同一回环接口、外部的 `https://fblerp.com/papereditor/api/health`。还要验证实际登录、WebSocket 保存确认与 PDF，不能只看健康接口。
 
 ## 更新与恢复
 
 更新先完成构建和测试，再上传 `dist`、`deploy`、服务端源码及锁文件；依赖变化时在 Mac 执行 `npm ci --omit=dev`，随后重启自己的 App 服务。FRPC 配置未变化时不必重启它。
 
-完整冷备份：停止 App LaunchAgent，复制整个 `data` 目录至另一设备，再恢复 App；只备份数据库文件可能丢失 WAL 中的数据和外部图片资源。快照只在当前 SSD 上，不能替代异地或异盘备份。
+完整冷备份：停止正在运行的 App 实例（包括 SSH 后台实例），复制整个 `data` 目录至另一设备，再恢复 App；只备份数据库文件可能丢失 WAL 中的数据和外部图片资源。快照只在当前 SSD 上，不能替代异地或异盘备份。
 
-卸载本项目的公网入口时，仅移除名为 `PaperEditor-HTTP-18080` 的 Windows 防火墙规则、对应 18080 的 `portproxy` 项、以及两个 `com.papereditor.*` LaunchAgent。不要停止共享 FRPS 或改动其他代理。
+卸载本项目时，仅移除 Nginx 中 Paper Editor 的 include、站点配置和两个 `com.papereditor.*` LaunchAgent。不要停止共享 FRPS、Nginx 或改动其他代理。
 
 ## Docker 替代后端
 

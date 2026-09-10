@@ -3,6 +3,7 @@ import { ChevronDown, ChevronUp, Download, FileText, Minus, Plus, Search, X } fr
 import { getDocument, GlobalWorkerOptions, TextLayer, type PDFDocumentProxy } from 'pdfjs-dist';
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import './pdf-text-layer.css';
+import { apiUrl, assetUrl } from './api';
 import type { Build } from '../shared/types';
 GlobalWorkerOptions.workerSrc = workerUrl;
 export interface PdfTarget {
@@ -154,13 +155,13 @@ export function PdfPreview({
     if (!build) return;
     let active = true;
     const task = getDocument({
-      url: `/api/builds/${build.id}/pdf`,
+      url: apiUrl(`/builds/${build.id}/pdf`),
       enableXfa: false,
-      cMapUrl: '/pdfjs/cmaps/',
+      cMapUrl: assetUrl('pdfjs/cmaps/'),
       cMapPacked: true,
-      standardFontDataUrl: '/pdfjs/standard_fonts/',
-      wasmUrl: '/pdfjs/wasm/',
-      iccUrl: '/pdfjs/iccs/',
+      standardFontDataUrl: assetUrl('pdfjs/standard_fonts/'),
+      wasmUrl: assetUrl('pdfjs/wasm/'),
+      iccUrl: assetUrl('pdfjs/iccs/'),
     });
     task.promise
       .then((p) => {
@@ -270,7 +271,7 @@ export function PdfPreview({
               className="icon-button"
               title="下载 PDF"
               aria-label="下载 PDF"
-              href={`/api/builds/${build.id}/pdf`}
+              href={apiUrl(`/builds/${build.id}/pdf`)}
               download="paper.pdf"
             >
               <Download size={16} />

@@ -36,7 +36,11 @@ const userSchema = z.object({
 });
 const idParams = z.object({ id: z.string().uuid() });
 export async function createApp(config: Config = getConfig()) {
-  const app = Fastify({ logger: false, bodyLimit: 3 * 1024 * 1024, trustProxy: false });
+  const app = Fastify({
+    logger: false,
+    bodyLimit: 3 * 1024 * 1024,
+    trustProxy: config.trustProxy ? '127.0.0.1' : false,
+  });
   const store = new Store(config),
     collab = new Collaboration(store, app.server),
     compiler = new Compiler(store, config);
@@ -78,16 +82,14 @@ export async function createApp(config: Config = getConfig()) {
     const e = error as Error & { statusCode?: number };
     const status = e instanceof z.ZodError ? 400 : e.statusCode || 500;
     if (status === 500) console.error('Request failed:', req.method, req.url, e.message);
-    reply
-      .status(status)
-      .send({
-        error:
-          e instanceof z.ZodError
-            ? '输入格式不正确。'
-            : status === 500
-              ? '操作失败，请稍后重试。'
-              : e.message,
-      });
+    reply.status(status).send({
+      error:
+        e instanceof z.ZodError
+          ? '输入格式不正确。'
+          : status === 500
+            ? '操作失败，请稍后重试。'
+            : e.message,
+    });
   });
   app.get('/api/health', async () => {
     store.writable();

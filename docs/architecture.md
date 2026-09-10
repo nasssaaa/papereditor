@@ -6,8 +6,8 @@
 
 ```mermaid
 flowchart LR
-    A[浏览器 A / Monaco + Yjs] <-->|HTTP + WebSocket| F[公网 Windows / FRPS]
-    B[浏览器 B / Monaco + Yjs] <-->|HTTP + WebSocket| F
+    A[浏览器 A / Monaco + Yjs] <-->|HTTPS + WSS| F[公网 Windows / Nginx + FRPS]
+    B[浏览器 B / Monaco + Yjs] <-->|HTTPS + WSS| F
     F <--> R[Mac / 独立 FRPC]
     R <--> S[Fastify API + 协同服务]
     S <--> D[(外接 SSD / SQLite + 资源)]
@@ -45,7 +45,7 @@ latexmk 保留项目辅助文件，以便增量编译、交叉引用和参考文
 
 ## 适合补充的下一阶段功能
 
-1. 域名与 HTTPS/WSS、外部备份和恢复演练：优先解决长期使用的运维条件。
+1. 外部备份和恢复演练、证书续期流程：补齐长期使用的运维条件。域名与 HTTPS/WSS 已部署。
 2. 评论、审阅建议、章节级历史差异、已命名版本与模板库：补齐研究团队工作流。
 3. 管理员配额、构建日志回收、队列指标、真实十人负载测试：获得可观测的容量边界。
 4. Zotero/BibTeX 辅助管理、引用预览、常用宏包补全、公式片段。

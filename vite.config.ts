@@ -5,6 +5,7 @@ import path from 'node:path';
 // PDF.js needs bundled CMaps for CJK glyphs and text extraction.
 const pdfAssets = ['cmaps', 'standard_fonts', 'wasm', 'iccs'];
 export default defineConfig({
+  base: './',
   plugins: [
     react(),
     {

@@ -46,7 +46,7 @@ import type {
   Snapshot,
   User,
 } from '../shared/types';
-import { api, patch, post, websocketUrl } from './api';
+import { api, apiUrl, patch, post, websocketUrl } from './api';
 import type { EditorHandle, SaveStatus } from './SourceEditor';
 const SourceEditor = lazy(() =>
   import('./SourceEditor').then((m) => ({ default: m.SourceEditor })),
@@ -262,6 +262,8 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
     return list;
   }, []);
   const selectProject = useCallback((id: string) => {
+    setSaveStatus('connecting');
+    setDetail(null);
     setProjectId(id);
     location.hash = `/project/${id}`;
     setModal(null);
@@ -730,7 +732,7 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
                     className="text-button"
                     disabled={!detail}
                     onClick={() => {
-                      if (detail) location.href = `/api/projects/${projectId}/export`;
+                      if (detail) location.href = apiUrl(`/projects/${projectId}/export`);
                     }}
                   >
                     <ArrowDownToLine size={14} />
@@ -987,7 +989,7 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
                             <p>{(file.size / 1024).toFixed(1)} KB · 此文件参与论文编译</p>
                             <a
                               className="secondary-button"
-                              href={`/api/files/${file.id}/content`}
+                              href={apiUrl(`/files/${file.id}/content`)}
                               download
                             >
                               下载文件

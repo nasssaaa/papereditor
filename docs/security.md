@@ -1,11 +1,16 @@
 # 权限与安全边界
 
-本版本用于邀请制小团队。当前部署按用户选择使用 HTTP/WS，登录密码和会话在浏览器至公网入口之间没有 TLS 保护；正式长期使用应配置 HTTPS/WSS，再打开 `COOKIE_SECURE=true`。FRP 客户端连接参数沿用管理员已有设置，不等同于浏览器 HTTPS。
+本版本用于邀请制小团队。公网入口为 `https://fblerp.com/papereditor/`，浏览器使用 HTTPS/WSS，服务端已打开 `COOKIE_SECURE=true`。TLS 使用 fblerp.com 现有证书，Nginx 将独立子路径转给 FRP，再到 Mac 的回环端口。FRP 客户端连接参数沿用管理员已有设置。
+
+Nginx 将 Paper Editor 会话 Cookie 限定在 `/papereditor/`，客户端资源、API、下载和 WebSocket 使用同一前缀。它与 ERP 共用浏览器 origin，路径隔离不等于独立 origin 的安全隔离；两者都应作为可信应用维护。
+
+最初提供的 wh1234567.com 证书未用于当前入口，其私钥只留在服务器私有目录，限制 SYSTEM 与管理员访问，不在 Git 中。该域名未备案，已停止使用其虚拟主机。
 
 ## 应用层
 
 - 密码使用随机盐 scrypt；会话令牌随机生成，数据库只保存 SHA-256 摘要。
-- HttpOnly + SameSite=Lax Cookie、会话过期、登录速率限制、变更请求 Origin 校验。
+- HttpOnly + SameSite=Lax Cookie、会话过期、登录速率限制、变更请求 Origin 校验。线上会话另带 Secure 标记。
+- `TRUST_PROXY=true` 时只信任回环代理；Nginx 覆盖传入的客户端地址头，避免用户伪造限速身份。
 - 每个项目均校验成员角色；只读成员不能通过 HTTP 或协同协议写入。
 - 文件路径限制、扩展名白名单、上传/ZIP 大小和文件数限制，拒绝路径穿越与隐藏控制文件。
 - 默认管理员随机密码只写私有数据目录，不写日志或 Git。

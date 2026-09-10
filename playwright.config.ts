@@ -4,7 +4,7 @@ export default defineConfig({
   timeout: 45000,
   workers: 1,
   use: {
-    baseURL: process.env.TEST_BASE_URL || 'http://127.0.0.1:18080',
+    baseURL: (process.env.TEST_BASE_URL || 'http://127.0.0.1:18080').replace(/\/$/, '') + '/',
     headless: true,
     viewport: { width: 1440, height: 1000 },
     screenshot: 'only-on-failure',

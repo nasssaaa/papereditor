@@ -1,5 +1,11 @@
+const appRoot = new URL('./', window.location.href);
+export const assetUrl = (relative: string) => {
+  const url = new URL(relative.replace(/^\//, ''), appRoot);
+  return url.pathname + url.search;
+};
+export const apiUrl = (path: string) => assetUrl('api' + path);
 export async function api<T>(url: string, options: RequestInit = {}): Promise<T> {
-  const response = await fetch('/api' + url, {
+  const response = await fetch(apiUrl(url), {
     ...options,
     headers: {
       ...(options.body && !(options.body instanceof FormData)
@@ -19,5 +25,5 @@ export const post = <T>(url: string, body: unknown = {}) =>
 export const patch = <T>(url: string, body: unknown) =>
   api<T>(url, { method: 'PATCH', body: JSON.stringify(body) });
 export function websocketUrl(path: string) {
-  return `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}${path}`;
+  return `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}${assetUrl(path)}`;
 }
