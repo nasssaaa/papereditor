@@ -6,6 +6,7 @@ export default defineConfig({
   use: {
     baseURL: (process.env.TEST_BASE_URL || 'http://127.0.0.1:18080').replace(/\/$/, '') + '/',
     headless: true,
+    channel: process.env.TEST_BROWSER_CHANNEL || undefined,
     viewport: { width: 1440, height: 1000 },
     screenshot: 'only-on-failure',
   },

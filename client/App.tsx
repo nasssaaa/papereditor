@@ -1,4 +1,13 @@
-import { useCallback, useEffect, useRef, useState, lazy, Suspense, type FormEvent } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  lazy,
+  Suspense,
+  type FormEvent,
+} from 'react';
 import {
   AlertCircle,
   ArrowDownToLine,
@@ -21,6 +30,7 @@ import {
   FolderOpen,
   History,
   KeyRound,
+  Keyboard,
   LoaderCircle,
   LogOut,
   PanelLeftClose,
@@ -51,7 +61,17 @@ import type { EditorHandle, SaveStatus } from './SourceEditor';
 const SourceEditor = lazy(() =>
   import('./SourceEditor').then((m) => ({ default: m.SourceEditor })),
 );
-import type { PdfTarget } from './PdfPreview';
+import type { PdfTarget, PdfHandle } from './PdfPreview';
+import { CommandPalette } from './CommandPalette';
+import {
+  commandDefinitions,
+  commandTitle,
+  shortcutLabel,
+  bindingsFor,
+  matchesBinding,
+  type Command,
+} from './commands';
+import type { WritingAction } from './writing';
 const PdfPreview = lazy(() => import('./PdfPreview').then((m) => ({ default: m.PdfPreview })));
 import {
   FormModal,
@@ -218,6 +238,7 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
     [sidebar, setSidebar] = useState(true),
     [mode, setMode] = useState<'split' | 'editor' | 'preview'>('split');
   const [modal, setModal] = useState<string | null>(null),
+    [focusedArea, setFocusedArea] = useState<'editor' | 'pdf'>('editor'),
     [saveStatus, setSaveStatus] = useState<SaveStatus>('connecting'),
     [characters, setCharacters] = useState(0),
     [online, setOnline] = useState(false),
@@ -231,17 +252,25 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
       { fileId: string; path: string; line: number; text: string }[]
     >([]),
     [snapshots, setSnapshots] = useState<Snapshot[]>([]),
-    [quickQuery, setQuickQuery] = useState(''),
     [target, setTarget] = useState<PdfTarget | null>(null),
     [editorPercent, setEditorPercent] = useState(54),
     [busyUpload, setBusyUpload] = useState(false);
   const editorHandle = useRef<EditorHandle | null>(null),
+    pdfHandle = useRef<PdfHandle | null>(null),
+    searchInput = useRef<HTMLInputElement>(null),
+    activeArea = useRef<'editor' | 'pdf'>('editor'),
+    commandsRef = useRef<Command[]>([]),
+    modalRef = useRef<string | null>(null),
+    compilePending = useRef<Promise<void> | null>(null),
+    diagnosticIndex = useRef<{ build: string; index: number } | null>(null),
+    pendingCommand = useRef<{ command: Command; projectId: string } | null>(null),
     uploadInput = useRef<HTMLInputElement>(null),
     currentProject = useRef(''),
     splitRoot = useRef<HTMLDivElement>(null),
     toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null),
     jumpPending = useRef<{ id: string; line: number } | null>(null);
   currentProject.current = projectId;
+  modalRef.current = modal;
   useEffect(() => {
     const narrow = window.matchMedia('(max-width: 900px)');
     const collapse = () => {
@@ -262,6 +291,10 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
     return list;
   }, []);
   const selectProject = useCallback((id: string) => {
+    if (currentProject.current === id) {
+      setModal(null);
+      return;
+    }
     setSaveStatus('connecting');
     setDetail(null);
     setProjectId(id);
@@ -339,7 +372,10 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
       timer: ReturnType<typeof setTimeout> | undefined,
       reloadTimer: ReturnType<typeof setTimeout> | undefined;
     const connect = () => {
-      if (disposed) return;
+      if (disposed || !navigator.onLine) return;
+      clearTimeout(timer);
+      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING))
+        return;
       ws = new WebSocket(websocketUrl(`/events?projectId=${projectId}`));
       ws.onopen = () => {
         setOnline(true);
@@ -347,7 +383,7 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
       };
       ws.onclose = () => {
         setOnline(false);
-        if (!disposed) timer = setTimeout(connect, 2000);
+        if (!disposed && navigator.onLine) timer = setTimeout(connect, 2000);
       };
       ws.onerror = () => {};
       ws.onmessage = (e) => {
@@ -393,33 +429,61 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
         } catch {}
       };
     };
+    const disconnect = () => {
+      clearTimeout(timer);
+      ws?.close();
+      setOnline(false);
+    };
+    window.addEventListener('online', connect);
+    window.addEventListener('offline', disconnect);
     connect();
     return () => {
       disposed = true;
+      window.removeEventListener('online', connect);
+      window.removeEventListener('offline', disconnect);
       clearTimeout(timer);
       clearTimeout(reloadTimer);
       ws?.close();
     };
   }, [projectId, refresh]);
   const file = detail?.files.find((f) => f.id === selectedFileId),
-    canEdit = detail?.project.role !== 'viewer';
+    canEdit = !!detail && detail.project.role !== 'viewer';
   const build = detail?.build || null,
     lastSuccess = detail?.lastSuccess || null,
     busy = build?.status === 'running' || build?.status === 'queued';
-  const compile = useCallback(async () => {
+  const compile = useCallback(() => {
+    if (compilePending.current) return compilePending.current;
     if (!projectId || !canEdit) return;
-    try {
-      await editorHandle.current?.flush();
-      const b = await post<Build>(`/projects/${projectId}/compile`);
-      setDetail((d) => (d ? { ...d, build: b } : d));
-    } catch (e) {
-      notify((e as Error).message);
-    }
-  }, [projectId, canEdit]);
+    const requestedProject = projectId;
+    const pending = (async () => {
+      try {
+        if (!online || saveStatus === 'offline')
+          throw new Error('当前处于离线状态，恢复连接后才能编译。');
+        if (
+          file?.kind === 'text' &&
+          (!editorHandle.current || saveStatus === 'connecting' || saveStatus === 'error')
+        )
+          throw new Error('文档尚未就绪，请稍后编译。');
+        await editorHandle.current?.flush();
+        if (currentProject.current !== requestedProject) return;
+        const b = await post<Build>(`/projects/${requestedProject}/compile`);
+        setDetail((d) => (d?.project.id === requestedProject ? { ...d, build: b } : d));
+      } catch (e) {
+        notify((e as Error).message);
+      }
+    })();
+    compilePending.current = pending;
+    void pending.finally(() => {
+      if (compilePending.current === pending) compilePending.current = null;
+    });
+    return pending;
+  }, [projectId, canEdit, online, saveStatus, file?.kind]);
   const jump = useCallback(
     (id: string, line: number) => {
+      if (id !== selectedFileId) setSaveStatus('connecting');
       setSelectedFileId(id);
-      if (mode === 'preview') setMode('split');
+      if (mode === 'preview')
+        setMode(window.matchMedia('(max-width: 900px)').matches ? 'editor' : 'split');
       if (id === selectedFileId && editorHandle.current) editorHandle.current.jump(line);
       else jumpPending.current = { id, line };
     },
@@ -440,23 +504,34 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
   );
   const forward = useCallback(
     async (line: number) => {
-      if (!lastSuccess || !file) return;
+      if (
+        !lastSuccess ||
+        !file ||
+        lastSuccess.revision !== detail?.project.revision ||
+        saveStatus === 'saving'
+      )
+        return;
       try {
         const pos = await post<{ page: number; x: number; y: number }>(
           `/builds/${lastSuccess.id}/synctex`,
           { fileId: file.id, line },
         );
         setTarget({ ...pos, key: Date.now() });
-        if (mode === 'editor') setMode('split');
+        if (window.matchMedia('(max-width: 900px)').matches) setMode('preview');
+        else if (mode === 'editor') setMode('split');
       } catch (e) {
         notify((e as Error).message);
       }
     },
-    [lastSuccess?.id, file?.id, mode],
+    [lastSuccess?.id, file?.id, mode, detail?.project.revision, saveStatus],
   );
   const reverse = useCallback(
     async (page: number, x: number, y: number) => {
       if (!lastSuccess) return;
+      if (lastSuccess.revision !== detail?.project.revision || saveStatus === 'saving') {
+        notify('PDF 版本已过期，请重新编译后定位。');
+        return;
+      }
       try {
         const pos = await post<{ fileId: string; line: number }>(
           `/builds/${lastSuccess.id}/synctex`,
@@ -467,33 +542,38 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
         notify((e as Error).message);
       }
     },
-    [lastSuccess?.id, jump],
+    [lastSuccess?.id, jump, detail?.project.revision, saveStatus],
   );
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
-        e.preventDefault();
-        e.stopPropagation();
-        void compile();
+      if (
+        e.defaultPrevented ||
+        e.isComposing ||
+        e.keyCode === 229 ||
+        e.getModifierState('AltGraph') ||
+        modalRef.current
+      )
+        return;
+      const target = e.target instanceof HTMLElement ? e.target : null;
+      if (target?.closest('[role="dialog"]')) return;
+      const source = !!target?.closest('.monaco-editor') && !!target?.closest('textarea.inputarea');
+      if (target?.closest('input,textarea,select,[contenteditable="true"]') && !source) return;
+      const command = commandsRef.current.find(
+        (c) => !c.referenceOnly && bindingsFor(c).some((binding) => matchesBinding(e, binding)),
+      );
+      if (!command || (command.scope === 'editor' && !source)) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      if (e.repeat && !command.repeat) return;
+      if (command.disabledReason) {
+        notify(command.disabledReason);
+        return;
       }
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'p') {
-        e.preventDefault();
-        setQuickQuery('');
-        setModal('quick');
-      }
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'f') {
-        e.preventDefault();
-        setSidebar(true);
-        setPanel('search');
-      }
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'b') {
-        e.preventDefault();
-        setSidebar((s) => !s);
-      }
+      void Promise.resolve(command.run()).catch((error) => notify(error.message));
     };
     window.addEventListener('keydown', key, true);
     return () => window.removeEventListener('keydown', key, true);
-  }, [compile]);
+  }, [notify]);
   useEffect(() => {
     const hash = () => {
       const id = location.hash.split('/project/')[1];
@@ -518,6 +598,200 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
     setTabs(next);
     if (id === selectedFileId) setSelectedFileId(next[next.length - 1] || '');
   };
+  const focusArea = (area: 'editor' | 'pdf') => {
+    activeArea.current = area;
+    if (window.matchMedia('(max-width: 900px)').matches)
+      setMode(area === 'editor' ? 'editor' : 'preview');
+    else if ((area === 'editor' && mode === 'preview') || (area === 'pdf' && mode === 'editor'))
+      setMode('split');
+    requestAnimationFrame(() =>
+      area === 'editor' ? editorHandle.current?.focus() : pdfHandle.current?.focus(),
+    );
+  };
+  const openPalette = (kind: 'commands' | 'shortcuts' | 'quick') => {
+    editorHandle.current?.captureSelection();
+    setModal(kind);
+  };
+  const closePalette = () => {
+    editorHandle.current?.clearSelectionCapture();
+    setModal(null);
+  };
+  const validDiagnostics =
+    build?.revision === detail?.project.revision && saveStatus !== 'saving'
+      ? (build?.diagnostics || [])
+          .filter(
+            (d) => d.line > 0 && detail?.files.some((f) => f.kind === 'text' && f.path === d.file),
+          )
+          .sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line)
+      : [];
+  const navigateProblem = (direction: number) => {
+    if (!build || !validDiagnostics.length) return;
+    const previous = diagnosticIndex.current;
+    const index =
+      previous?.build === build.id
+        ? (previous.index + direction + validDiagnostics.length) % validDiagnostics.length
+        : direction > 0
+          ? 0
+          : validDiagnostics.length - 1;
+    diagnosticIndex.current = { build: build.id, index };
+    const d = validDiagnostics[index],
+      targetFile = detail!.files.find((f) => f.path === d.file)!;
+    setPanelOpen(true);
+    setOutputTab('problems');
+    jump(targetFile.id, d.line);
+    notify(`${index + 1}/${validDiagnostics.length} · ${d.file}:${d.line} · ${d.message}`);
+  };
+  const pdfAction = (action: 'search' | 'fit' | 'download' | 'in' | 'out') => {
+    if (action !== 'download') focusArea('pdf');
+    requestAnimationFrame(() => {
+      if (action === 'in' || action === 'out')
+        pdfHandle.current?.zoom(action === 'in' ? 0.1 : -0.1);
+      else pdfHandle.current?.[action]();
+    });
+  };
+  const nativeActions: Record<string, string> = {
+    comment: 'editor.action.commentLine',
+    moveUp: 'editor.action.moveLinesUpAction',
+    moveDown: 'editor.action.moveLinesDownAction',
+    copyUp: 'editor.action.copyLinesUpAction',
+    copyDown: 'editor.action.copyLinesDownAction',
+  };
+  const handlers: Record<string, () => void | Promise<unknown>> = {
+    palette: () => openPalette('commands'),
+    shortcuts: () => openPalette('shortcuts'),
+    quick: () => openPalette('quick'),
+    save: compile,
+    compile,
+    cancel: () => post(`/projects/${projectId}/compile/cancel`),
+    find: () => {
+      if (activeArea.current === 'pdf') pdfAction('search');
+      else {
+        focusArea('editor');
+        requestAnimationFrame(() => editorHandle.current?.search());
+      }
+    },
+    search: () => {
+      setSidebar(true);
+      setPanel('search');
+      requestAnimationFrame(() => searchInput.current?.focus());
+    },
+    sidebar: () => setSidebar((value) => !value),
+    output: () => setPanelOpen((value) => !value),
+    forward: () => editorHandle.current?.forward(),
+    focus: () => focusArea(activeArea.current === 'pdf' ? 'editor' : 'pdf'),
+    nextProblem: () => navigateProblem(1),
+    previousProblem: () => navigateProblem(-1),
+    undo: () => editorHandle.current?.undo(),
+    redo: () => editorHandle.current?.redo(),
+    newFile: () => setModal('new-file'),
+    rename: () => setModal('rename'),
+    closeFile: () => closeTab(selectedFileId),
+    editorView: () => {
+      setMode('editor');
+      activeArea.current = 'editor';
+      requestAnimationFrame(() => editorHandle.current?.focus());
+    },
+    previewView: () => {
+      setMode('preview');
+      activeArea.current = 'pdf';
+      requestAnimationFrame(() => pdfHandle.current?.focus());
+    },
+    splitView: () => setMode('split'),
+    pdfSearch: () => pdfAction('search'),
+    pdfZoomIn: () => pdfAction('in'),
+    pdfZoomOut: () => pdfAction('out'),
+    pdfFit: () => pdfAction('fit'),
+    pdfDownload: () => pdfAction('download'),
+    snapshot: () => setModal('snapshot'),
+    history: () => {
+      setSidebar(true);
+      setPanel('history');
+    },
+    settings: () => setModal('settings'),
+    members: () => setModal('members'),
+  };
+  const projectReason = !detail ? '请先打开项目' : undefined;
+  const editingReason = projectReason || (!canEdit ? '当前项目为只读' : undefined);
+  const sourceReason =
+    projectReason ||
+    (file?.kind !== 'text'
+      ? '请先打开文本文件'
+      : !editorHandle.current || saveStatus === 'connecting' || saveStatus === 'error'
+        ? '文档尚未就绪'
+        : undefined);
+  const onlineReason =
+    !online || saveStatus === 'offline'
+      ? '当前处于离线状态，恢复连接后才能执行此操作。'
+      : undefined;
+  const pdfReason = projectReason || (!lastSuccess ? '请先成功编译一份 PDF' : undefined);
+  const compileReason =
+    editingReason ||
+    onlineReason ||
+    (file?.kind === 'text' ? sourceReason : undefined) ||
+    (busy ? '正在编译，请等待完成或停止编译' : undefined);
+  const commands: Command[] = commandDefinitions.map((definition) => {
+    const { id } = definition;
+    let reason = projectReason;
+    if (['palette', 'shortcuts'].includes(id)) reason = undefined;
+    else if (['save', 'compile'].includes(id)) reason = compileReason;
+    else if (id === 'cancel')
+      reason = editingReason || onlineReason || (!busy ? '没有正在进行的编译' : undefined);
+    else if (definition.category === '写作' || definition.scope === 'editor')
+      reason = editingReason || sourceReason;
+    else if (['newFile', 'snapshot', 'settings', 'rename'].includes(id))
+      reason =
+        editingReason || onlineReason || (id === 'rename' && !file ? '请先打开文件' : undefined);
+    else if (id === 'closeFile') reason = !file ? '没有打开的文件标签' : undefined;
+    else if (definition.category === 'PDF') reason = pdfReason;
+    else if (id === 'forward')
+      reason =
+        sourceReason ||
+        pdfReason ||
+        onlineReason ||
+        (lastSuccess?.revision !== detail?.project.revision || saveStatus === 'saving'
+          ? 'PDF 版本已过期，请重新编译后定位'
+          : undefined);
+    else if (id === 'find') reason = focusedArea === 'pdf' ? pdfReason : sourceReason;
+    else if (['nextProblem', 'previousProblem'].includes(id))
+      reason = !validDiagnostics.length ? '当前版本没有可定位的问题' : undefined;
+    else if (id === 'splitView' && window.matchMedia('(max-width: 900px)').matches)
+      reason = '窄屏下请切换源码或 PDF 视图';
+    return {
+      ...definition,
+      disabledReason: reason,
+      run:
+        handlers[id] ||
+        (() => {
+          if (nativeActions[id]) editorHandle.current?.action(nativeActions[id]);
+          else if (definition.category === '写作') editorHandle.current?.write(id as WritingAction);
+        }),
+    };
+  });
+  commandsRef.current = commands;
+  const executeCommand = (id: string) => {
+    const command = commandsRef.current.find((item) => item.id === id);
+    if (!command) return;
+    if (command.disabledReason) {
+      notify(command.disabledReason);
+      return;
+    }
+    void Promise.resolve(command.run()).catch((error) => notify(error.message));
+  };
+  const commandDisabled = (id: string) => !!commands.find((c) => c.id === id)?.disabledReason;
+  const runPaletteCommand = (command: Command) => {
+    pendingCommand.current = { command, projectId };
+    setModal(null);
+  };
+  useLayoutEffect(() => {
+    const pending = pendingCommand.current;
+    if (modal || !pending) return;
+    pendingCommand.current = null;
+    if (currentProject.current !== pending.projectId) return;
+    if (pending.command.id.startsWith('file:')) pending.command.run();
+    else executeCommand(pending.command.id);
+    if (!['palette', 'shortcuts', 'quick'].includes(pending.command.id))
+      editorHandle.current?.clearSelectionCapture();
+  }, [modal]);
   const errors = build?.diagnostics.filter((d) => d.severity === 'error').length || 0,
     warnings = build?.diagnostics.filter((d) => d.severity === 'warning').length || 0;
   const startResize = (e: React.PointerEvent) => {
@@ -590,7 +864,18 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
     return output;
   };
   return (
-    <div className="workspace">
+    <div
+      className="workspace"
+      onFocusCapture={(e) => {
+        if ((e.target as HTMLElement).closest('.preview-panel')) {
+          activeArea.current = 'pdf';
+          setFocusedArea('pdf');
+        } else if ((e.target as HTMLElement).closest('.source-panel')) {
+          activeArea.current = 'editor';
+          setFocusedArea('editor');
+        }
+      }}
+    >
       <header className="titlebar">
         <div className="app-wordmark">
           <FileText size={21} />
@@ -621,6 +906,14 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
           <Plus size={17} />
         </button>
         <div className="titlebar-right">
+          <button
+            className="icon-button"
+            title={commandTitle('palette')}
+            aria-label="命令面板"
+            onClick={() => executeCommand('palette')}
+          >
+            <Search size={17} />
+          </button>
           <span className={`connection-indicator ${online ? '' : 'offline'}`}>
             {online ? <Cloud size={14} /> : <CloudOff size={14} />}
             <span>{online ? '已连接' : '未连接'}</span>
@@ -644,9 +937,15 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
                 <button
                   key={String(p)}
                   className={`activity-button ${sidebar && panel === p ? 'active' : ''}`}
-                  title={String(title)}
+                  title={p === 'search' ? commandTitle('search') : String(title)}
                   aria-label={String(title)}
-                  onClick={() => iconPanel(p as Panel)}
+                  onClick={() =>
+                    p === 'search'
+                      ? executeCommand('search')
+                      : p === 'history'
+                        ? executeCommand('history')
+                        : iconPanel(p as Panel)
+                  }
                 >
                   <I size={23} strokeWidth={1.5} />
                 </button>
@@ -657,7 +956,7 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
               title="项目成员"
               aria-label="项目成员"
               disabled={!detail}
-              onClick={() => setModal('members')}
+              onClick={() => executeCommand('members')}
             >
               <Users size={23} strokeWidth={1.5} />
             </button>
@@ -668,7 +967,7 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
               title="项目设置"
               aria-label="项目设置"
               disabled={!detail || !canEdit}
-              onClick={() => setModal('settings')}
+              onClick={() => executeCommand('settings')}
             >
               <Settings size={23} strokeWidth={1.5} />
             </button>
@@ -680,9 +979,9 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
               <span>{{ files: '资源管理器', search: '搜索', history: '版本快照' }[panel]}</span>
               <button
                 className="icon-button"
-                title="收起侧栏"
+                title={commandTitle('sidebar')}
                 aria-label="收起侧栏"
-                onClick={() => setSidebar(false)}
+                onClick={() => executeCommand('sidebar')}
               >
                 <PanelLeftClose size={16} />
               </button>
@@ -698,7 +997,7 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
                       aria-label="新建文件"
                       title="新建文件"
                       disabled={!detail || !canEdit}
-                      onClick={() => setModal('new-file')}
+                      onClick={() => executeCommand('newFile')}
                     >
                       <FilePlus2 size={15} />
                     </button>
@@ -745,6 +1044,7 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
                 <div className="search-input">
                   <Search size={15} />
                   <input
+                    ref={searchInput}
                     aria-label="全局搜索词"
                     placeholder="搜索项目文件"
                     value={search}
@@ -774,7 +1074,7 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
                 <button
                   className="secondary-button full-width"
                   disabled={!detail || !canEdit}
-                  onClick={() => setModal('snapshot')}
+                  onClick={() => executeCommand('snapshot')}
                 >
                   <Plus size={15} />
                   创建快照
@@ -812,8 +1112,8 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
                     <button
                       className="icon-button"
                       aria-label="展开侧栏"
-                      title="展开侧栏"
-                      onClick={() => setSidebar(true)}
+                      title={commandTitle('sidebar')}
+                      onClick={() => executeCommand('sidebar')}
                     >
                       <PanelLeftOpen size={17} />
                     </button>
@@ -831,7 +1131,13 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
                           title={String(label)}
                           aria-label={String(label) + '视图'}
                           className={mode === value ? 'active' : ''}
-                          onClick={() => setMode(value as typeof mode)}
+                          onClick={() =>
+                            executeCommand(
+                              { editor: 'editorView', split: 'splitView', preview: 'previewView' }[
+                                String(value)
+                              ]!,
+                            )
+                          }
                         >
                           <I size={15} />
                           <span>{String(label)}</span>
@@ -842,10 +1148,10 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
                   <span className="toolbar-divider" />
                   <button
                     className="icon-button"
-                    title="源码定位到 PDF"
+                    title={commandTitle('forward')}
                     aria-label="源码定位到 PDF"
-                    disabled={!file || !lastSuccess}
-                    onClick={() => editorHandle.current?.forward()}
+                    disabled={commandDisabled('forward')}
+                    onClick={() => executeCommand('forward')}
                   >
                     <ArrowLeftRight size={16} />
                   </button>
@@ -854,7 +1160,7 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
                   <button
                     className="collaborators"
                     title="管理项目成员"
-                    onClick={() => setModal('members')}
+                    onClick={() => executeCommand('members')}
                   >
                     {members
                       .filter((m) => onlineIds.includes(m.id))
@@ -893,28 +1199,25 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
                       className="icon-button"
                       aria-label="停止编译"
                       title="停止编译"
-                      disabled={!canEdit}
-                      onClick={() =>
-                        void post(`/projects/${projectId}/compile/cancel`).catch((e) =>
-                          notify(e.message),
-                        )
-                      }
+                      disabled={commandDisabled('cancel')}
+                      onClick={() => executeCommand('cancel')}
                     >
                       <Square size={15} />
                     </button>
                   )}
                   <button
                     className="compile-button"
-                    disabled={!canEdit}
-                    onClick={() => void compile()}
+                    title={commandTitle('save')}
+                    disabled={commandDisabled('compile')}
+                    onClick={() => executeCommand('compile')}
                   >
                     {busy ? (
                       <LoaderCircle size={15} className="spin" />
                     ) : (
                       <Play size={15} fill="currentColor" />
                     )}
-                    <span>{busy ? '重新排队' : '编译'}</span>
-                    <kbd>Ctrl S</kbd>
+                    <span>{busy ? '编译中…' : '编译'}</span>
+                    <kbd>{shortcutLabel('save')}</kbd>
                   </button>
                 </div>
               </div>
@@ -977,7 +1280,6 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
                               }
                               onStatus={onEditorStatus}
                               onCount={setCharacters}
-                              onCompile={() => void compile()}
                               onForward={(line) => void forward(line)}
                               handle={editorHandle}
                             />
@@ -1002,8 +1304,8 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
                     <div className="source-empty">
                       <FileText size={44} strokeWidth={1} />
                       <p>在左侧选择一个文件开始编辑</p>
-                      <button className="text-button" onClick={() => setModal('quick')}>
-                        快速打开文件 <kbd>Ctrl P</kbd>
+                      <button className="text-button" onClick={() => executeCommand('quick')}>
+                        快速打开文件 <kbd>{shortcutLabel('quick')}</kbd>
                       </button>
                     </div>
                   )}
@@ -1022,9 +1324,12 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
                 />
                 <Suspense fallback={<div className="app-loading">正在载入预览…</div>}>
                   <PdfPreview
+                    handle={pdfHandle}
+                    onCommand={executeCommand}
+                    canCompile={!commandDisabled('compile')}
                     build={lastSuccess}
                     busy={!!busy}
-                    onCompile={() => void compile()}
+                    onCompile={() => executeCommand('compile')}
                     onReverse={(...args) => void reverse(...args)}
                     target={target}
                   />
@@ -1185,6 +1490,13 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
           <span>{file?.kind === 'text' ? `${characters.toLocaleString()} 字符` : ''}</span>
           <span>UTF-8</span>
           <span>{detail?.project.engine || 'LaTeX'}</span>
+          <button
+            title={commandTitle('shortcuts')}
+            aria-label="快捷键速查"
+            onClick={() => executeCommand('shortcuts')}
+          >
+            <Keyboard size={14} />
+          </button>
           <button title="账号设置" onClick={() => setModal('account')}>
             {detail?.project.role === 'viewer' ? '只读' : '协作编辑'}
           </button>
@@ -1276,7 +1588,7 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
       {modal === 'file-menu' && file && (
         <Modal title={file.path} onClose={() => setModal(null)}>
           <div className="action-list">
-            <button onClick={() => setModal('rename')}>重命名 / 移动</button>
+            <button onClick={() => executeCommand('rename')}>重命名 / 移动</button>
             {file.path.endsWith('.tex') && (
               <button
                 onClick={async () => {
@@ -1352,32 +1664,26 @@ function Workspace({ user, onLogout }: { user: User; onLogout: () => void }) {
           </div>
         </Modal>
       )}
-      {modal === 'quick' && detail && (
-        <Modal title="快速打开" onClose={() => setModal(null)}>
-          <input
-            className="quick-input"
-            placeholder="输入文件名…"
-            aria-label="快速打开文件名"
-            value={quickQuery}
-            onChange={(e) => setQuickQuery(e.target.value)}
-          />
-          <div className="quick-files">
-            {detail.files
-              .filter((f) => f.path.toLocaleLowerCase().includes(quickQuery.toLocaleLowerCase()))
-              .map((f) => (
-                <button
-                  key={f.id}
-                  onClick={() => {
-                    setSelectedFileId(f.id);
-                    setModal(null);
-                  }}
-                >
-                  <FileIcon file={f} />
-                  {f.path}
-                </button>
-              ))}
-          </div>
-        </Modal>
+      {['commands', 'shortcuts', 'quick'].includes(modal || '') && (
+        <CommandPalette
+          key={modal}
+          kind={modal === 'quick' ? 'files' : modal === 'shortcuts' ? 'shortcuts' : 'commands'}
+          onClose={closePalette}
+          onRun={runPaletteCommand}
+          commands={
+            modal === 'quick'
+              ? (detail?.files || []).map((f) => ({
+                  id: `file:${f.id}`,
+                  title: f.path,
+                  category: '文件',
+                  keywords: f.path,
+                  run: () => {
+                    jump(f.id, 1);
+                  },
+                }))
+              : commands.filter((c) => modal === 'shortcuts' || !c.referenceOnly)
+          }
+        />
       )}
       {modal === 'account' && (
         <Modal title="账号" onClose={() => setModal(null)}>

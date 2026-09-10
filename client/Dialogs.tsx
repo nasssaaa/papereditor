@@ -28,6 +28,7 @@ export function Modal({
     const previous = document.activeElement as HTMLElement | null;
     ref.current?.querySelector<HTMLElement>('input,select,button')?.focus();
     const key = (e: KeyboardEvent) => {
+      if (e.isComposing || e.keyCode === 229 || e.defaultPrevented) return;
       if (e.key === 'Escape') onClose();
       if (e.key === 'Tab') {
         const items = Array.from(

@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures';
 import fs from 'node:fs';
 import path from 'node:path';
 const credentials = JSON.parse(
@@ -16,6 +16,10 @@ test('workspace editing, snapshots, project settings, and narrow preview', async
   await page.getByRole('button', { name: '进入工作空间' }).click();
   await expect(page.getByRole('main').getByLabel('源码编辑区')).toBeVisible();
   await expect(page.getByTitle('保存状态')).toContainText('已保存', { timeout: 20000 });
+  const currentProject = await page.getByLabel('选择项目').inputValue();
+  await page.getByLabel('选择项目').selectOption(currentProject);
+  await expect(page.getByRole('main').getByLabel('源码编辑区')).toBeVisible();
+  await expect(page.getByTitle('保存状态')).toContainText('已保存');
   await page.screenshot({ path: 'test-results/workspace-desktop.png', fullPage: true });
   await page.getByRole('button', { name: '新建项目', exact: true }).click();
   const projectTitle = `浏览器验收项目 ${Date.now()}`;

@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures';
 import fs from 'node:fs';
 
 test('compiled PDF displays text, supports search, and maps back to source', async ({
